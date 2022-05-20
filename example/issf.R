@@ -23,7 +23,8 @@ shore <- read_rds("shore.rds")
 ggplot(shore) + geom_sf()
 
 # Lets first create a raster with a 5m resolution of the lake
-r <- raster::raster(st_cast(shore, "POLYGON"), res = 5)
+r <- raster::raster(shore, res = 5)
+r
 
 # Then rasterize the lake and set each pixel in the lake to `NA`. The
 # `raster::distance()` function will calculate the distance from `NA` pixels to
@@ -33,6 +34,7 @@ raster::plot(shore.rast)
 
 # Now we can calculate the distances from all NA pixels to all non-NA pixels. 
 shore.dist <- raster::distance(shore.rast)
+unique(shore.dist[], na.rm = TRUE)
 
 # And mask this to the outline of the lake
 shore.dist <- raster::mask(shore.dist, shore)
@@ -87,6 +89,8 @@ tr2 <- track_resample(tr1, rate = minutes(30), tolerance = seconds(90))
 ggplot() + geom_sf(data = shore) +
   geom_point(aes(x_, y_), data = tr2)  
 
+tr2
+
 # Now we can prepare the data set for the integrated step-selection analysis
 tr3 <- tr2 %>% 
   # We only want to consider burts (= sequences of data with equal sampling
@@ -116,6 +120,8 @@ tr3 <- tr2 %>%
     night_start = ifelse(tod_start_ == "night", 1, 0), 
   )
 
+tr3
+
 # Now we have to care for random steps that are outside the lake. We oversampled
 # random steps at the beginning. We can remove all steps that have an `NA` value
 # for the covariate 
@@ -125,7 +131,7 @@ tr3.controll %>% mutate(n = map_int(data, nrow)) %>% pull(n) %>% table()
 # and then sample for each strata 20 random steps
 tr3.controll <- tr3.controll %>% mutate(data = map(data, slice_sample, n = 20)) %>% 
   unnest(cols = data)
-# Finally, we have to bind the observed and controll steps together.
+# Finally, we have to bind the observed and control steps together.
 tr4 <- bind_rows(
   tr3 %>% filter(case_), 
   tr3.controll
@@ -143,19 +149,21 @@ m0 <- tr3 %>%
 # For the second model, we also include `sl_` and interaction between `sl_` and
 # the covariate distance to shore.
 m1 <- tr3 %>% 
-  fit_issf(case_ ~ layer_end + sl_ + sl_:layer_end + strata(step_id_))
+  fit_issf(case_ ~ layer_end + sl_ + sl_:layer_start + strata(step_id_))
 
 # The third models includes a interaction with time of day. 
 m2 <- tr3 %>% 
   fit_issf(case_ ~ 
              layer_end + layer_end:night_end + 
-             sl_ +  sl_:night_start + sl_:layer_end + 
+             sl_ +  sl_:night_start + sl_:layer_start + 
              strata(step_id_), model = TRUE)
 
 # Lets compare different models with AIC
 AIC(m0)
 AIC(m1)
 AIC(m2)
+
+summary(m2)
 
 # .. Interpretation -----
 # .. .. Habitat Selection ----
@@ -208,6 +216,7 @@ x2 <- data.frame(
 
 exp(log_rss(m2, x1, x2)$df$log_rss)
 
+# Double check JS
 # This means, if the pike is given the choice between the same location (100 m
 # away from the shore), once during the day and once during the night, it ~ 2
 # times as likely to find the pike there during the night
@@ -220,9 +229,11 @@ x1 <- expand.grid(
 )
 
 x1$night_start <- x1$night_end
+x1$layer_start <- x1$layer_end
 
 x2 <- data.frame(
   layer_end = 100, 
+  layer_start = 100, 
   night_end = 0,
   night_start = 0, 
   sl_ = 1
@@ -248,12 +259,13 @@ lrss1$df %>%
 x1$layer_start <- x1$layer_end
 
 sc <- 1 / ((1 / sl_distr_params(m2)$scale) - coef(m2)["sl_"] + coef(m2)["sl_:night_start"] * x1$night_start +
-             coef(m2)["layer_end:sl_"] * x1$layer_start)
+             coef(m2)["sl_:layer_start"] * x1$layer_start)
 
 movement <- x1 %>% mutate(scale = sc, shape = sl_distr_params(m2)$shape,
-displacement = scale * shape)
+                          displacement = scale * shape)
 
 movement %>% ggplot(aes(layer_start, displacement, col = factor(night_start))) +
   geom_line() +
   labs(x = "Distance to shore [m]", y = "Displacement [m/30 min]", col = "Time") +
   theme_minimal()
+
